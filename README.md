@@ -145,10 +145,6 @@ let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
  let d_tau = 0.01;
  let (x_next, u_next) = integrate_geodesic_spherical(&x, &u, mass, g, c, d_tau);
  ```
-let (x_next, u_next) = integrate_geodesic_spherical(&x, &u, mass, g, c, d_tau);
-```
- - [carroll, s. m. (2004). *spacetime and geometry: an introduction to general relativity*](https://www.preposterousuniverse.com/spacetimeandgeometry/)
- - [wald, r. m. (1984). *general relativity*](https://press.uchicago.edu/ucp/books/book/chicago/g/bo5957998.html)
 
 ## further reading
 - [carroll, s. m. (2004). *spacetime and geometry: an introduction to general relativity*](https://www.preposterousuniverse.com/spacetimeandgeometry/)
@@ -163,8 +159,8 @@ let (x_next, u_next) = integrate_geodesic_spherical(&x, &u, mass, g, c, d_tau);
 
 1. **clone and build:**
    ```sh
-   git clone <repo-url>
-   cd physics
+   git clone https://github.com/saltytine/relativity
+   cd relativity
    cargo build
    ```
 2. **run the example simulation:**
@@ -193,49 +189,18 @@ let (x_next, u_next) = integrate_geodesic_spherical(&x, &u, mass, g, c, d_tau);
 
 ---
 
-## progress and status
-- [x] robust, analytic geodesic integrator (spherical schwarzschild)
-- [x] defensive numerics (no nan/inf, singularity-safe)
-- [x] robust force integration (four-acceleration capping, adaptive d_tau)
-- [x] global gamma/energy clamping for all four-velocity and four-momentum construction
-- [x] robust collision response (on-shell projection, clamping, fallback for unphysical states)
-- [x] ecs architecture for extensibility
-- [x] four-vector and four-force algebra
-- [x] newtonian and post-newtonian gravity models
-- [x] all call sites and imports updated
-- [x] comprehensive documentation and diagnostics
-
----
-
-## how to run
-- build: `cargo build`
-- run: `cargo run`
-- test: `cargo test`
-
----
-
-## license
-this project is open source and available under the mit license.
-# advanced 3d relativistic physics engine in rust
-
-## vision
-a modular, high performance 3d engine in rust, which will support both classical and relativistic physics.
-scalable from low-end laptops to high-end rigs. features a flexible rendering pipeline, advanced physics, and a powerful engine.
-
----
-
 ## roadmap
 
-### 1. core engine architecture
-- modular ecs (entity-component-system) foundation using `bevy_ecs`, `specs`, or custom implementation.
-- renderer abstraction layer: swap between opengl (light systems) and vulkan/metal/dx12 (heavy systems).
-- clean separation of engine modules: ecs, physics, rendering, input, and tooling.
-
-### 2. math & physics foundation
+### 1. math & physics foundation
 - integrate a robust linear algebra library (`nalgebra` or `glam`).
 - implement classical newtonian physics: collision detection, rigid body dynamics.
 - extend to relativistic physics: time dilation, length contraction, relativistic momentum/energy, light speed constraints.
 - physics integrators use 4d spacetime vectors; timestep based on proper time per object.
+
+### 2. core engine architecture
+- modular ecs (entity-component-system) foundation using a custom implementation.
+- renderer abstraction layer: swap between opengl (light systems) and vulkan/metal/dx12 (heavy systems).
+- clean separation of engine modules: ecs, physics, rendering, input, and tooling.
 
 ### 3. rendering
 - flexible, multi-pass rendering pipeline.
@@ -256,24 +221,6 @@ scalable from low-end laptops to high-end rigs. features a flexible rendering pi
 - unit tests for all modules.
 - physics validation against known relativistic scenarios (twin paradox, light clocks, relativistic collisions).
 - benchmarking and tuning for various hardware profiles.
-
----
-
-## development principles
-- **no corners cut:** every feature fully implemented and tested.
-- **unit tests:** each module and feature must have comprehensive tests.
-- **documentation:** all code and apis are well-documented.
-- **performance:** always profile and optimize for both low and high-end systems.
-
----
-
-## next steps
-1. **step 1:** set up the project structure and implement the ecs core with unit tests.
-2. **step 2:** integrate math library and build classical physics foundation.
-3. **step 3:** implement rendering abstraction and basic pipeline.
-4. **step 4:** add relativistic physics and visual effects.
-5. **step 5:** build tooling, api, and debugging utilities.
-6. **step 6:** comprehensive testing, validation, and optimization.
 
 ---
 
