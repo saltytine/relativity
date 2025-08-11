@@ -1,6 +1,184 @@
+/// compute and print Hamiltonian and momentum constraint diagnostics
+pub fn constraint_diagnostics(
+    grid: &Grid3D,
+    h_constraint: &Vec<Vec<Vec<f64>>>,
+    m_constraint: Option<&Vec<Vec<Vec<[f64; 3]>>>>,
+) {
+    let nx = grid.nx;
+    let ny = grid.ny;
+    let nz = grid.nz;
+    let mut h_max: f64 = 0.0;
+    let mut h_sum: f64 = 0.0;
+    let mut h_count: f64 = 0.0;
+    for i in 0..nx {
+        for j in 0..ny {
+            for k in 0..nz {
+                let val = h_constraint[i][j][k].abs();
+                h_max = h_max.max(val);
+                h_sum += val;
+                h_count += 1.0;
+            }
+        }
+    }
+    let h_avg = h_sum / h_count.max(1.0);
+    println!("[Constraint] Hamiltonian constraint (should be near zero): max = {:.3e}, avg = {:.3e}", h_max, h_avg);
+    if let Some(m_con) = m_constraint {
+        let mut m_max: f64 = 0.0;
+        let mut m_sum: f64 = 0.0;
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let v = m_con[i][j][k];
+                    let norm = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+                    m_max = m_max.max(norm);
+                    m_sum += norm;
+                }
+            }
+        }
+        let m_avg = m_sum / h_count.max(1.0);
+        println!("[Constraint] Momentum constraint (should be near zero): max = {:.3e}, avg = {:.3e}", m_max, m_avg);
+    }
+}
+/// simple scalar field matter variables for demonstration
+#[derive(Clone)]
+pub struct ScalarField {
+    pub phi: Vec<f64>,      // scalar field value at each grid point
+    pub pi: Vec<f64>,       // conjugate momentum Π
+    pub grad_phi: Vec<[f64; 3]>, // spatial derivatives Φ^i
+}
+
+impl ScalarField {
+    pub fn new(grid: &Grid3D) -> Self {
+        let n = grid.nx * grid.ny * grid.nz;
+        Self {
+            phi: vec![0.0; n],
+            pi: vec![0.0; n],
+            grad_phi: vec![[0.0; 3]; n],
+        }
+    }
+}
+/// types of boundary conditions
+pub enum BoundaryCondition {
+    Periodic,
+    Dirichlet(f64), // fixed value
+    Neumann(f64),   // fixed derivative
+    Outflow,        // simple outflow/absorbing
+}
+
+/// apply boundary condition to a 3D scalar field
+pub fn apply_bc_scalar_3d(
+    arr: &mut Vec<f64>,
+    grid: &Grid3D,
+    bc: &BoundaryCondition,
+) {
+    let nx = grid.nx;
+    let ny = grid.ny;
+    let nz = grid.nz;
+    match bc {
+        BoundaryCondition::Periodic => {
+            // copy edges from opposite sides
+            for j in 0..ny {
+                for k in 0..nz {
+                    let idx0 = grid.index(0, j, k);
+                    let idxn = grid.index(nx-1, j, k);
+                    arr[idx0] = arr[idxn-1];
+                    arr[idxn] = arr[1];
+                }
+            }
+            for i in 0..nx {
+                for k in 0..nz {
+                    let idx0 = grid.index(i, 0, k);
+                    let idxn = grid.index(i, ny-1, k);
+                    arr[idx0] = arr[grid.index(i, ny-2, k)];
+                    arr[idxn] = arr[grid.index(i, 1, k)];
+                }
+            }
+            for i in 0..nx {
+                for j in 0..ny {
+                    let idx0 = grid.index(i, j, 0);
+                    let idxn = grid.index(i, j, nz-1);
+                    arr[idx0] = arr[grid.index(i, j, nz-2)];
+                    arr[idxn] = arr[grid.index(i, j, 1)];
+                }
+            }
+        }
+        BoundaryCondition::Dirichlet(val) => {
+            for i in 0..nx {
+                for j in 0..ny {
+                    arr[grid.index(i, j, 0)] = *val;
+                    arr[grid.index(i, j, nz-1)] = *val;
+                }
+            }
+            for i in 0..nx {
+                for k in 0..nz {
+                    arr[grid.index(i, 0, k)] = *val;
+                    arr[grid.index(i, ny-1, k)] = *val;
+                }
+            }
+            for j in 0..ny {
+                for k in 0..nz {
+                    arr[grid.index(0, j, k)] = *val;
+                    arr[grid.index(nx-1, j, k)] = *val;
+                }
+            }
+        }
+        BoundaryCondition::Neumann(deriv) => {
+            // set edge to interior + dx*deriv (approximate)
+            let dx = grid.dx;
+            let dy = grid.dy;
+            let dz = grid.dz;
+            for i in 0..nx {
+                for j in 0..ny {
+                    arr[grid.index(i, j, 0)] = arr[grid.index(i, j, 1)] - dz * deriv;
+                    arr[grid.index(i, j, nz-1)] = arr[grid.index(i, j, nz-2)] + dz * deriv;
+                }
+            }
+            for i in 0..nx {
+                for k in 0..nz {
+                    arr[grid.index(i, 0, k)] = arr[grid.index(i, 1, k)] - dy * deriv;
+                    arr[grid.index(i, ny-1, k)] = arr[grid.index(i, ny-2, k)] + dy * deriv;
+                }
+            }
+            for j in 0..ny {
+                for k in 0..nz {
+                    arr[grid.index(0, j, k)] = arr[grid.index(1, j, k)] - dx * deriv;
+                    arr[grid.index(nx-1, j, k)] = arr[grid.index(nx-2, j, k)] + dx * deriv;
+                }
+            }
+        }
+        BoundaryCondition::Outflow => {
+            // copy interior to edge (simple outflow)
+            for i in 0..nx {
+                for j in 0..ny {
+                    arr[grid.index(i, j, 0)] = arr[grid.index(i, j, 1)];
+                    arr[grid.index(i, j, nz-1)] = arr[grid.index(i, j, nz-2)];
+                }
+            }
+            for i in 0..nx {
+                for k in 0..nz {
+                    arr[grid.index(i, 0, k)] = arr[grid.index(i, 1, k)];
+                    arr[grid.index(i, ny-1, k)] = arr[grid.index(i, ny-2, k)];
+                }
+            }
+            for j in 0..ny {
+                for k in 0..nz {
+                    arr[grid.index(0, j, k)] = arr[grid.index(1, j, k)];
+                    arr[grid.index(nx-1, j, k)] = arr[grid.index(nx-2, j, k)];
+                }
+            }
+        }
+    }
+}
 impl NumericalRelativityGravity {
-    /// Evolve the BSSN variables by one time step (full BSSN evolution, 3+1D, no matter)
+    /// evolve the BSSN variables by one time step (full BSSN evolution, 3+1D, no matter)
     pub fn evolve_bssn_step(&mut self, dt: f64) {
+        // --- constraint diagnostics and (placeholder) damping ---
+        // compute Hamiltonian constraint (already present in your code)
+        // let h_constraint = compute_hamiltonian_constraint(...);
+        // let m_constraint = compute_momentum_constraint(...); 
+        // TODO: implement
+        // constraint_diagnostics(&self.grid, &h_constraint, None);
+        // TODO: Add constraint damping to evolution equations (e.g., subtract epsilon * constraint)
     let nx = self.grid.nx;
     let ny = self.grid.ny;
     let nz = self.grid.nz;
@@ -8,22 +186,25 @@ impl NumericalRelativityGravity {
     let dx = self.grid.dx;
     let dy = self.grid.dy;
     let dz = self.grid.dz;
-    // Storage for updated BSSN variables
+    // storage for updated BSSN variables and gauge fields
     let mut new_conf_metric = self.conformal_metric.clone();
     let mut new_phi = self.conformal_factor.clone();
     let mut new_Abar = self.trace_free_extrinsic.clone();
     let mut new_K = self.trace_K.clone();
     let mut new_Gamma = self.conformal_connection.clone();
-    // Precompute conformal Ricci tensor (vacuum, no matter)
-    // For demonstration, use the ADM Ricci as a proxy for conformal Ricci
+    let mut new_lapse = self.lapse.clone();
+    let mut new_shift = self.shift.clone();
+    let mut new_shift_aux = self.shift_aux.clone();
+    // precompute conformal Ricci tensor (vacuum, no matter)
+    // for demonstration, use the ADM Ricci as a proxy for conformal Ricci
     let gamma_grid = self.metric_to_grid();
     let ricci_grid = compute_ricci_tensor(&gamma_grid, dx, dy, dz);
-    // Evolve each grid point (interior only)
+    // evolve each grid point (interior only)
     for k in 1..(nz-1) {
         for j in 1..(ny-1) {
             for i in 1..(nx-1) {
                 let idx = self.grid.index(i, j, k);
-                // --- Unpack variables ---
+                // --- unpack variables ---
                 let gbar = &self.conformal_metric[idx];
                 let phi = self.conformal_factor[idx];
                 let Abar = &self.trace_free_extrinsic[idx];
@@ -31,22 +212,23 @@ impl NumericalRelativityGravity {
                 let Gamma = self.conformal_connection[idx];
                 let alpha = self.lapse[idx];
                 let beta = self.shift[idx];
-                // --- Compute derivatives (finite difference, central) ---
-                // Compute derivatives of phi, K, etc. for advection (Lie derivatives)
+                let B = self.shift_aux[idx];
+                // --- compute derivatives (finite difference, central) ---
+                // compute derivatives of phi, K, etc. for advection (Lie derivatives)
                 let idx_xp = self.grid.index(i+1, j, k);
                 let idx_xm = self.grid.index(i-1, j, k);
                 let idx_yp = self.grid.index(i, j+1, k);
                 let idx_ym = self.grid.index(i, j-1, k);
                 let idx_zp = self.grid.index(i, j, k+1);
                 let idx_zm = self.grid.index(i, j, k-1);
-                // Lie derivative of scalar f: β^i ∂_i f
+                // lie derivative of scalar f: β^i ∂_i f
                 let lie_phi = beta[0]*(self.conformal_factor[idx_xp]-self.conformal_factor[idx_xm])/(2.0*dx)
                             + beta[1]*(self.conformal_factor[idx_yp]-self.conformal_factor[idx_ym])/(2.0*dy)
                             + beta[2]*(self.conformal_factor[idx_zp]-self.conformal_factor[idx_zm])/(2.0*dz);
                 let lie_K = beta[0]*(self.trace_K[idx_xp]-self.trace_K[idx_xm])/(2.0*dx)
                           + beta[1]*(self.trace_K[idx_yp]-self.trace_K[idx_ym])/(2.0*dy)
                           + beta[2]*(self.trace_K[idx_zp]-self.trace_K[idx_zm])/(2.0*dz);
-                // Lie derivative of vector: β^j ∂_j v^i - v^j ∂_j β^i
+                // lie derivative of vector: β^j ∂_j v^i - v^j ∂_j β^i
                 let mut lie_Gamma = [0.0; 3];
                 for d in 0..3 {
                     let dG_dx = (self.conformal_connection[self.grid.index(i+1,j,k)][d] - self.conformal_connection[self.grid.index(i-1,j,k)][d])/(2.0*dx);
@@ -66,17 +248,17 @@ impl NumericalRelativityGravity {
                     }
                     lie_Gamma[d] = adv - minus_vj_dbeta;
                 }
-                // Lie derivative of tensor: β^k ∂_k T_{ij} + T_{ik} ∂_j β^k + T_{kj} ∂_i β^k
+                // lie derivative of tensor: β^k ∂_k T_{ij} + T_{ik} ∂_j β^k + T_{kj} ∂_i β^k
                 let mut lie_gbar = [[0.0; 3]; 3];
                 let mut lie_Abar = [[0.0; 3]; 3];
                 for a in 0..3 {
                     for b in 0..3 {
-                        // Advection
+                        // advection
                         let dT_dx = (gbar[a][b] - self.conformal_metric[self.grid.index(i-1,j,k)][a][b]) / dx;
                         let dT_dy = (gbar[a][b] - self.conformal_metric[self.grid.index(i,j-1,k)][a][b]) / dy;
                         let dT_dz = (gbar[a][b] - self.conformal_metric[self.grid.index(i,j,k-1)][a][b]) / dz;
                         lie_gbar[a][b] = beta[0]*dT_dx + beta[1]*dT_dy + beta[2]*dT_dz;
-                        // For Abar, same but with Abar
+                        // for Abar, same but with Abar
                         let dA_dx = (Abar[a][b] - self.trace_free_extrinsic[self.grid.index(i-1,j,k)][a][b]) / dx;
                         let dA_dy = (Abar[a][b] - self.trace_free_extrinsic[self.grid.index(i,j-1,k)][a][b]) / dy;
                         let dA_dz = (Abar[a][b] - self.trace_free_extrinsic[self.grid.index(i,j,k-1)][a][b]) / dz;
@@ -84,22 +266,51 @@ impl NumericalRelativityGravity {
                     }
                 }
                 // --- BSSN evolution equations (vacuum, no matter) ---
-                // 1. Evolve conformal metric: ∂_t \bar{\gamma}_{ij} = -2α \bar{A}_{ij} + Lie_β \bar{\gamma}_{ij}
+                // 1. evolve conformal metric: ∂_t \bar{\gamma}_{ij} = -2α \bar{A}_{ij} + Lie_β \bar{\gamma}_{ij}
                 let mut d_gbar = [[0.0; 3]; 3];
                 for a in 0..3 {
                     for b in 0..3 {
                         d_gbar[a][b] = -2.0 * alpha * Abar[a][b] + lie_gbar[a][b];
                     }
                 }
-                // 2. Evolve conformal factor: ∂_t φ = -(1/6) α K + Lie_β φ
+                // 2. evolve conformal factor: ∂_t φ = -(1/6) α K + Lie_β φ
                 let d_phi = -(1.0/6.0) * alpha * K + lie_phi;
-                // 3. Evolve trace-free extrinsic: ∂_t \bar{A}_{ij} = e^{-4φ}[Ricci_{ij}]^TF -2α \bar{A}_{ik} \bar{A}^k_j + α \bar{A}_{ij} K + Lie_β \bar{A}_{ij}
+                // --- gauge evolution equations ---
+                // 1+log slicing for lapse: ∂_t α = -2αK + β^i ∂_i α
+                let dalpha_dx = (self.lapse[idx_xp] - self.lapse[idx_xm])/(2.0*dx);
+                let dalpha_dy = (self.lapse[idx_yp] - self.lapse[idx_ym])/(2.0*dy);
+                let dalpha_dz = (self.lapse[idx_zp] - self.lapse[idx_zm])/(2.0*dz);
+                let adv_alpha = beta[0]*dalpha_dx + beta[1]*dalpha_dy + beta[2]*dalpha_dz;
+                let d_alpha = -2.0 * alpha * K + adv_alpha;
+                // Gamma-driver for shift: ∂_t β^i = (3/4) B^i, ∂_t B^i = ∂_t Γ^i - η B^i
+                let d_Gamma_dt = [
+                    (self.conformal_connection[idx][0] - self.conformal_connection[idx_xm][0]) / dx,
+                    (self.conformal_connection[idx][1] - self.conformal_connection[idx_ym][1]) / dy,
+                    (self.conformal_connection[idx][2] - self.conformal_connection[idx_zm][2]) / dz,
+                ];
+                let d_B = [
+                    d_Gamma_dt[0] - self.eta * B[0],
+                    d_Gamma_dt[1] - self.eta * B[1],
+                    d_Gamma_dt[2] - self.eta * B[2],
+                ];
+                let d_beta = [
+                    0.75 * B[0],
+                    0.75 * B[1],
+                    0.75 * B[2],
+                ];
+                // update gauge fields
+                new_lapse[idx] = alpha + dt * d_alpha;
+                for d in 0..3 {
+                    new_shift[idx][d] = beta[d] + dt * d_beta[d];
+                    new_shift_aux[idx][d] = B[d] + dt * d_B[d];
+                }
+                // 3. evolve trace-free extrinsic: ∂_t \bar{A}_{ij} = e^{-4φ}[Ricci_{ij}]^TF -2α \bar{A}_{ik} \bar{A}^k_j + α \bar{A}_{ij} K + Lie_β \bar{A}_{ij}
                 let mut d_Abar = [[0.0; 3]; 3];
-                // Compute e^{-4φ}
+                // compute e^{-4φ}
         let exp_m4phi = f64::exp(-4.0*phi);
-                // Ricci_{ij} (use ADM Ricci as proxy for conformal Ricci)
+                // ricci_{ij} (use ADM Ricci as proxy for conformal Ricci)
                 let ricci = &ricci_grid[i][j][k];
-                // Compute trace-free part: S^TF_{ij} = S_{ij} - (1/3) δ_{ij} S^k_k
+                // compute trace-free part: S^TF_{ij} = S_{ij} - (1/3) δ_{ij} S^k_k
                 let mut ricci_trace = 0.0;
                 for d in 0..3 { ricci_trace += ricci[d][d]; }
                 for a in 0..3 {
@@ -107,7 +318,7 @@ impl NumericalRelativityGravity {
                         let ricci_TF = ricci[a][b] - (1.0/3.0)*if a==b {ricci_trace} else {0.0};
                         // -2α \bar{A}_{ik} \bar{A}^k_j
                         let mut Abar_up = [[0.0; 3]; 3];
-                        // Raise index: \bar{A}^k_j = gbar^{k m} \bar{A}_{m j}
+                        // raise index: \bar{A}^k_j = gbar^{k m} \bar{A}_{m j}
                         let inv_gbar = invert_3x3(gbar).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
                         for kidx in 0..3 {
                             for m in 0..3 {
@@ -119,13 +330,13 @@ impl NumericalRelativityGravity {
                         d_Abar[a][b] = exp_m4phi * ricci_TF - 2.0*alpha*AbarAbar + alpha*Abar[a][b]*K + lie_Abar[a][b];
                     }
                 }
-                // 4. Evolve K: ∂_t K = -γ^{ij} D_i D_j α + α (\bar{A}_{ij} \bar{A}^{ij} + (1/3) K^2)
-                // For demonstration, use Laplacian of alpha (central diff)
+                // 4. evolve K: ∂_t K = -γ^{ij} D_i D_j α + α (\bar{A}_{ij} \bar{A}^{ij} + (1/3) K^2)
+                // for demonstration, use Laplacian of alpha (central diff)
                 let lap_alpha = (
                     self.lapse[idx_xp] + self.lapse[idx_xm] - 2.0*alpha)/(dx*dx)
                     + (self.lapse[idx_yp] + self.lapse[idx_ym] - 2.0*alpha)/(dy*dy)
                     + (self.lapse[idx_zp] + self.lapse[idx_zm] - 2.0*alpha)/(dz*dz);
-                // Compute \bar{A}_{ij} \bar{A}^{ij}
+                // compute \bar{A}_{ij} \bar{A}^{ij}
                 let mut AbarAbar_sum = 0.0;
                 let inv_gbar = invert_3x3(gbar).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
                 for a in 0..3 {
@@ -136,37 +347,37 @@ impl NumericalRelativityGravity {
                     }
                 }
                 let d_K = -lap_alpha + alpha * (AbarAbar_sum + (1.0/3.0)*K*K) + lie_K;
-                // 5. Evolve conformal connection: ∂_t \bar{Γ}^i = full BSSN RHS (vacuum)
-                // See e.g. Baumgarte & Shapiro, eqn 2.45, or Alcubierre eqn 2.113
+                // 5. evolve conformal connection: ∂_t \bar{Γ}^i = full BSSN RHS (vacuum)
+                // see e.g. Baumgarte & Shapiro, eqn 2.45, or Alcubierre eqn 2.113
                 let mut d_Gamma = [0.0; 3];
-                // Precompute inverse conformal metric
+                // precompute inverse conformal metric
                 let inv_gbar = invert_3x3(gbar).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
-                // Compute derivatives of alpha
+                // compute derivatives of alpha
                 let dalpha_dx = (self.lapse[idx_xp] - self.lapse[idx_xm])/(2.0*dx);
                 let dalpha_dy = (self.lapse[idx_yp] - self.lapse[idx_ym])/(2.0*dy);
                 let dalpha_dz = (self.lapse[idx_zp] - self.lapse[idx_zm])/(2.0*dz);
                 let dalpha = [dalpha_dx, dalpha_dy, dalpha_dz];
-                // Compute derivatives of K
+                // compute derivatives of K
                 let dK_dx = (self.trace_K[idx_xp] - self.trace_K[idx_xm])/(2.0*dx);
                 let dK_dy = (self.trace_K[idx_yp] - self.trace_K[idx_ym])/(2.0*dy);
                 let dK_dz = (self.trace_K[idx_zp] - self.trace_K[idx_zm])/(2.0*dz);
                 let dK = [dK_dx, dK_dy, dK_dz];
-                // Compute derivatives of phi
+                // compute derivatives of phi
                 let dphi_dx = (self.conformal_factor[idx_xp] - self.conformal_factor[idx_xm])/(2.0*dx);
                 let dphi_dy = (self.conformal_factor[idx_yp] - self.conformal_factor[idx_ym])/(2.0*dy);
                 let dphi_dz = (self.conformal_factor[idx_zp] - self.conformal_factor[idx_zm])/(2.0*dz);
                 let dphi = [dphi_dx, dphi_dy, dphi_dz];
-                // Compute ∂_j \bar{A}^{ij} (raise index)
+                // compute ∂_j \bar{A}^{ij} (raise index)
                 let mut div_Abar = [0.0; 3];
                 for iidx in 0..3 {
                     let mut sum = 0.0;
                     for jidx in 0..3 {
-                        // Raise index: \bar{A}^{ij} = gbar^{ik} \bar{A}_{kj}
+                        // raise index: \bar{A}^{ij} = gbar^{ik} \bar{A}_{kj}
                         let mut Abar_up = 0.0;
                         for kidx in 0..3 {
                             Abar_up += inv_gbar[iidx][kidx] * Abar[kidx][jidx];
                         }
-                        // Derivative wrt jidx
+                        // derivative wrt jidx
                         let idx_p = match jidx {
                             0 => self.grid.index(i+1,j,k),
                             1 => self.grid.index(i,j+1,k),
@@ -179,7 +390,7 @@ impl NumericalRelativityGravity {
                             2 => self.grid.index(i,j,k-1),
                             _ => idx
                         };
-                        // Central difference for Abar_up
+                        // central difference for Abar_up
                         let mut Abar_up_p = 0.0;
                         let mut Abar_up_m = 0.0;
                         for kidx2 in 0..3 {
@@ -191,9 +402,9 @@ impl NumericalRelativityGravity {
                     }
                     div_Abar[iidx] = sum;
                 }
-                // Now assemble full RHS
+                // now assemble full RHS
                 for d in 0..3 {
-                    // Advection (Lie derivative)
+                    // advection (lie derivative)
                     let adv = lie_Gamma[d];
                     // -2 \bar{A}^{dj} ∂_j α
                     let mut Abar_up_dj_dalpha = 0.0;
@@ -209,10 +420,10 @@ impl NumericalRelativityGravity {
                     // -16π gbar^{dj} α S_j (vacuum: S_j=0)
                     // -2 \bar{A}^{dj} ∂_j α + 2/3 gbar^{dj} ∂_j K + adv
                     d_Gamma[d] = adv - 2.0*Abar_up_dj_dalpha + (2.0/3.0)*gbar_dj_dK;
-                    // Optionally: add -2 \bar{A}^{dj} α ∂_j φ (often small)
-                    // Optionally: add constraint damping, Kreiss-Oliger dissipation, etc.
+                    // optionally: add -2 \bar{A}^{dj} α ∂_j φ (often small)
+                    // optionally: add constraint damping, Kreiss-Oliger dissipation, etc.
                 }
-                // --- Update variables ---
+                // --- update variables ---
                 for a in 0..3 {
                     for b in 0..3 {
                         new_conf_metric[idx][a][b] += dt * d_gbar[a][b];
@@ -227,34 +438,34 @@ impl NumericalRelativityGravity {
             }
         }
     }
-    // --- Robustification: enforce symmetry, trace-free, positive-definite, clamp phi, handle BCs ---
-    // 1. Enforce symmetry of conformal metric and Abar
+    // --- robustification: enforce symmetry, trace-free, positive-definite, clamp phi, handle BCs ---
+    // 1. enforce symmetry of conformal metric and Abar
     for idx in 0..n {
         for a in 0..3 {
             for b in 0..3 {
-                // Symmetrize
+                // symmetrize
                 new_conf_metric[idx][a][b] = 0.5 * (new_conf_metric[idx][a][b] + new_conf_metric[idx][b][a]);
                 new_Abar[idx][a][b] = 0.5 * (new_Abar[idx][a][b] + new_Abar[idx][b][a]);
             }
         }
     }
-    // 2. Enforce trace-free Abar
+    // 2. enforce trace-free Abar
     for idx in 0..n {
         let mut tr = 0.0;
         for a in 0..3 { tr += new_Abar[idx][a][a]; }
         for a in 0..3 { new_Abar[idx][a][a] -= tr/3.0; }
     }
-    // 3. Clamp phi to avoid metric singularities
+    // 3. clamp phi to avoid metric singularities
     for idx in 0..n {
         new_phi[idx] = new_phi[idx].max(-20.0).min(20.0);
     }
-    // 4. Enforce positive-definite conformal metric (diagonal elements > 1e-8)
+    // 4. enforce positive-definite conformal metric (diagonal elements > 1e-8)
     for idx in 0..n {
         for a in 0..3 {
             new_conf_metric[idx][a][a] = new_conf_metric[idx][a][a].max(1e-8);
         }
     }
-    // 5. Apply periodic BCs to all BSSN variables (not just metric/Abar)
+    // 5. apply periodic BCs to all BSSN variables (not just metric/Abar)
     // (for now, just copy edges for all fields)
     let mut apply_bc_scalar = |arr: &mut Vec<f64>| {
         for k in 0..nz {
@@ -322,7 +533,7 @@ impl NumericalRelativityGravity {
     apply_bc_scalar(&mut new_K);
     apply_bc_vec(&mut new_Gamma);
 
-    // --- Constraint monitoring diagnostics ---
+    // --- constraint monitoring diagnostics ---
     let gamma = self.metric_to_grid();
     let K = self.extrinsic_to_grid();
     let h_constraint = compute_hamiltonian_constraint(&gamma, &K, dx, dy, dz);
@@ -343,7 +554,7 @@ impl NumericalRelativityGravity {
         }
     }
     let h_avg = h_sum / h_count.max(1.0);
-    // --- Momentum constraint diagnostics ---
+    // --- momentum constraint diagnostics ---
     let m_constraint = compute_momentum_constraint(&gamma, &K, dx, dy, dz);
     let mut m_max: f64 = 0.0;
     let mut m_sum: f64 = 0.0;
@@ -367,21 +578,21 @@ impl NumericalRelativityGravity {
     println!("[BSSN evolve] Hamiltonian: max={:.3e}, avg={:.3e}, nan_count={}, Momentum: max={:.3e}, avg={:.3e}, nan_count={}",
         h_max, h_avg, h_nan_count, m_max, m_avg, m_nan_count);
 
-    // --- Constraint handling: simple damping (additive, can be improved) ---
-    // For demonstration, subtract a small fraction of the constraint from K and Abar
+    // --- constraint handling: simple damping (additive, can be improved) ---
+    // for demonstration, subtract a small fraction of the constraint from K and Abar
     let constraint_damping = 0.1 * dt;
     for idx in 0..n {
-        // Damping for K (Hamiltonian constraint)
+        // damping for K (hamiltonian constraint)
         let i = idx%nx; let j = (idx/nx)%ny; let k = idx/(nx*ny);
         new_K[idx] -= constraint_damping * h_constraint[i][j][k];
-        // Damping for Abar (Momentum constraint, only diagonal for demo)
+        // damping for Abar (momentum constraint, only diagonal for demo)
         for a in 0..3 {
             new_Abar[idx][a][a] -= constraint_damping * m_constraint[i][j][k][a];
         }
     }
 
-    // Write back updated BSSN variables
-    // --- Update ADM fields from BSSN variables ---
+    // write back updated BSSN variables
+    // --- update ADM fields from BSSN variables ---
     for idx in 0..n {
         let phi = self.conformal_factor[idx];
         let exp4phi = f64::exp(4.0*phi);
@@ -404,7 +615,7 @@ impl NumericalRelativityGravity {
         self.extrinsic_curvature[idx] = Kij;
     }
 
-    // --- Constraint monitoring diagnostics ---
+    // --- constraint monitoring diagnostics ---
     let gamma = self.metric_to_grid();
     let K = self.extrinsic_to_grid();
     let h_constraint = compute_hamiltonian_constraint(&gamma, &K, dx, dy, dz);
@@ -425,7 +636,7 @@ impl NumericalRelativityGravity {
         }
     }
     let h_avg = h_sum / h_count.max(1.0);
-    // --- Momentum constraint diagnostics ---
+    // --- momentum constraint diagnostics ---
     let m_constraint = compute_momentum_constraint(&gamma, &K, dx, dy, dz);
     let mut m_max: f64 = 0.0;
     let mut m_sum: f64 = 0.0;
@@ -449,20 +660,20 @@ impl NumericalRelativityGravity {
     println!("[BSSN evolve] Hamiltonian: max={:.3e}, avg={:.3e}, nan_count={}, Momentum: max={:.3e}, avg={:.3e}, nan_count={}",
         h_max, h_avg, h_nan_count, m_max, m_avg, m_nan_count);
 
-    // --- Constraint handling: simple damping (additive, can be improved) ---
-    // For demonstration, subtract a small fraction of the constraint from K and Abar
+    // --- constraint handling: simple damping (additive, can be improved) ---
+    // for demonstration, subtract a small fraction of the constraint from K and Abar
     let constraint_damping = 0.1 * dt;
     for idx in 0..n {
-        // Damping for K (Hamiltonian constraint)
+        // damping for K (Hamiltonian constraint)
         let i = idx%nx; let j = (idx/nx)%ny; let k = idx/(nx*ny);
         new_K[idx] -= constraint_damping * h_constraint[i][j][k];
-        // Damping for Abar (Momentum constraint, only diagonal for demo)
+        // damping for Abar (Momentum constraint, only diagonal for demo)
         for a in 0..3 {
             new_Abar[idx][a][a] -= constraint_damping * m_constraint[i][j][k][a];
         }
     }
     }
-    /// Helper: convert flat metric storage to 4D grid
+    /// helper: convert flat metric storage to 4D grid
     fn metric_to_grid(&self) -> Vec<Vec<Vec<[[f64; 3]; 3]>>> {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
@@ -478,7 +689,7 @@ impl NumericalRelativityGravity {
         }
         out
     }
-    /// Helper: convert flat extrinsic storage to 4D grid
+    /// helper: convert flat extrinsic storage to 4D grid
     fn extrinsic_to_grid(&self) -> Vec<Vec<Vec<[[f64; 3]; 3]>>> {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
@@ -496,7 +707,7 @@ impl NumericalRelativityGravity {
     }
 }
 
-/// Apply periodic boundary conditions to the 3-metric and extrinsic curvature arrays.
+/// apply periodic boundary conditions to the 3-metric and extrinsic curvature arrays.
 pub fn apply_periodic_boundary_conditions(
     gamma: &mut Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     K: &mut Vec<Vec<Vec<[[f64; 3]; 3]>>>,
@@ -504,7 +715,7 @@ pub fn apply_periodic_boundary_conditions(
     let nx = gamma.len();
     let ny = gamma[0].len();
     let nz = gamma[0][0].len();
-    // X boundaries
+    // x boundaries
     for j in 0..ny {
         for k in 0..nz {
             gamma[0][j][k] = gamma[nx-2][j][k];
@@ -513,7 +724,7 @@ pub fn apply_periodic_boundary_conditions(
             K[nx-1][j][k] = K[1][j][k];
         }
     }
-    // Y boundaries
+    // y boundaries
     for i in 0..nx {
         for k in 0..nz {
             gamma[i][0][k] = gamma[i][ny-2][k];
@@ -522,7 +733,7 @@ pub fn apply_periodic_boundary_conditions(
             K[i][ny-1][k] = K[i][1][k];
         }
     }
-    // Z boundaries
+    // z boundaries
     for i in 0..nx {
         for j in 0..ny {
             gamma[i][j][0] = gamma[i][j][nz-2];
@@ -532,9 +743,9 @@ pub fn apply_periodic_boundary_conditions(
         }
     }
 }
-/// Compute the Hamiltonian constraint at each grid point.
+/// compute the Hamiltonian constraint at each grid point.
 /// H = R + K^2 - K_{ab} K^{ab}
-/// Returns a 3D array [i][j][k] of constraint values.
+/// returns a 3D array [i][j][k] of constraint values.
 pub fn compute_hamiltonian_constraint(
     gamma: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     K: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
@@ -548,7 +759,7 @@ pub fn compute_hamiltonian_constraint(
     for i in 0..nx {
         for j in 0..ny {
             for k in 0..nz {
-                // Ricci scalar: R = gamma^{ab} Ricci_{ab}
+                // ricci scalar: R = gamma^{ab} Ricci_{ab}
                 let inv_gamma = invert_3x3(&gamma[i][j][k]).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
                 let mut R = 0.0;
                 for a in 0..3 {
@@ -577,9 +788,9 @@ pub fn compute_hamiltonian_constraint(
     constraint
 }
 
-/// Compute the momentum constraint at each grid point.
+/// compute the momentum constraint at each grid point.
 /// M^a = D_b (K^{ab} - gamma^{ab} K)
-/// Returns a 3D array [i][j][k][a] of constraint values (a=0..2)
+/// returns a 3D array [i][j][k][a] of constraint values (a=0..2)
 pub fn compute_momentum_constraint(
     gamma: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     K: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
@@ -595,7 +806,7 @@ pub fn compute_momentum_constraint(
                 let inv_gamma = invert_3x3(&gamma[i][j][k]).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
                 let Kij = &K[i][j][k];
                 let K_trace = Kij[0][0] + Kij[1][1] + Kij[2][2];
-                // Compute K^{ab} = gamma^{ac} K_{cb}
+                // compute K^{ab} = gamma^{ac} K_{cb}
                 let mut K_up = [[0.0; 3]; 3];
                 for a in 0..3 {
                     for b in 0..3 {
@@ -610,7 +821,7 @@ pub fn compute_momentum_constraint(
                     for b in 0..3 {
                         // K^{ab} - gamma^{ab} K
                         let val = K_up[a][b] - inv_gamma[a][b] * K_trace;
-                        // Take divergence (spatial derivative wrt b)
+                        // take divergence (spatial derivative wrt b)
                         sum += spatial_deriv_tensor_component(&K_up, i, j, k, a, b, dx, dy, dz, nx, ny, nz)
                             - spatial_deriv_tensor_component(&inv_gamma, i, j, k, a, b, dx, dy, dz, nx, ny, nz) * K_trace;
                     }
@@ -622,7 +833,7 @@ pub fn compute_momentum_constraint(
     constraint
 }
 
-/// Helper: spatial derivative of a tensor component at (i,j,k) wrt direction b (0=x,1=y,2=z)
+/// helper: spatial derivative of a tensor component at (i,j,k) wrt direction b (0=x,1=y,2=z)
 fn spatial_deriv_tensor_component(
     tensor: &[[f64; 3]; 3],
     i: usize, j: usize, k: usize,
@@ -642,13 +853,13 @@ fn spatial_deriv_tensor_component(
     let jm = j.saturating_sub(dj).max(0);
     let kp = k.saturating_add(dk).min(nz-1);
     let km = k.saturating_sub(dk).max(0);
-    let f1 = tensor[a][b]; // At (i+di, j+dj, k+dk) would require full tensor field; here, just use local value
-    let f2 = tensor[a][b]; // At (i-di, j-dj, k-dk) would require full tensor field; here, just use local value
-    (f1 - f2) / (2.0 * h) // Placeholder: in a full implementation, pass the full tensor field
+    let f1 = tensor[a][b]; // at (i+di, j+dj, k+dk) would require full tensor field; here, just use local value
+    let f2 = tensor[a][b]; // at (i-di, j-dj, k-dk) would require full tensor field; here, just use local value
+    (f1 - f2) / (2.0 * h) // placeholder: in a full implementation, pass the full tensor field
 }
-/// Perform a single forward Euler update for the 3-metric and extrinsic curvature fields.
+/// perform a single forward Euler update for the 3-metric and extrinsic curvature fields.
 ///
-/// Arguments:
+/// arguments:
 /// - `gamma`: mutable 3-metric field [i][j][k][a][b]
 /// - `K`: mutable extrinsic curvature field [i][j][k][a][b]
 /// - `lapse`: lapse function field [i][j][k]
@@ -679,12 +890,12 @@ pub fn evolve_adm_euler(
         }
     }
 }
-/// Compute the right-hand side of the 3-metric evolution equation (ADM) at each grid point.
+/// compute the right-hand side of the 3-metric evolution equation (ADM) at each grid point.
 ///
-/// Arguments:
+/// arguments:
 /// - `K`: extrinsic curvature field [i][j][k][a][b]
 /// - `lapse`: lapse function field [i][j][k]
-/// Returns: rhs_gamma [i][j][k][a][b]
+/// returns: rhs_gamma [i][j][k][a][b]
 pub fn compute_gamma_rhs(
     K: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     lapse: &Vec<Vec<Vec<f64>>>,
@@ -707,14 +918,14 @@ pub fn compute_gamma_rhs(
     }
     rhs_gamma
 }
-/// Compute the right-hand side of the extrinsic curvature evolution equation (ADM) at each grid point.
+/// compute the right-hand side of the extrinsic curvature evolution equation (ADM) at each grid point.
 ///
-/// Arguments:
+/// arguments:
 /// - `gamma`: 3-metric field [i][j][k][a][b]
 /// - `K`: extrinsic curvature field [i][j][k][a][b]
 /// - `lapse`: lapse function field [i][j][k]
 /// - `dx`, `dy`, `dz`: grid spacings
-/// Returns: rhs_K [i][j][k][a][b]
+/// returns: rhs_K [i][j][k][a][b]
 pub fn compute_K_rhs(
     gamma: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     K: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
@@ -727,7 +938,7 @@ pub fn compute_K_rhs(
     let ricci = compute_ricci_tensor(gamma, dx, dy, dz);
     let mut rhs_K = vec![vec![vec![[[0.0; 3]; 3]; nz]; ny]; nx];
 
-    // Helper: trace of K at (i,j,k)
+    // helper: trace of K at (i,j,k)
     let trace_K = |Kijk: &[[f64; 3]; 3]| Kijk[0][0] + Kijk[1][1] + Kijk[2][2];
 
     for i in 0..nx {
@@ -736,7 +947,7 @@ pub fn compute_K_rhs(
                 let alpha = lapse[i][j][k];
                 let Kij = &K[i][j][k];
                 let K_trace = Kij[0][0] + Kij[1][1] + Kij[2][2];
-                // Compute K^a_b = gamma^{ac} K_{cb}
+                // compute K^a_b = gamma^{ac} K_{cb}
                 let inv_gamma = invert_3x3(&gamma[i][j][k]).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
                 let mut K_up = [[0.0; 3]; 3];
                 for a in 0..3 {
@@ -746,15 +957,15 @@ pub fn compute_K_rhs(
                         }
                     }
                 }
-                // Compute D_a D_b alpha (second covariant derivative of lapse)
-                // For now, use second central difference (ignoring connection terms for simplicity)
+                // compute D_a D_b alpha (second covariant derivative of lapse)
+                // for now, use second central difference (ignoring connection terms for simplicity)
                 let mut D_aD_b_alpha = [[0.0; 3]; 3];
                 for a in 0..3 {
                     for b in 0..3 {
                         D_aD_b_alpha[a][b] = second_spatial_deriv(lapse, i, j, k, a, b, dx, dy, dz, nx, ny, nz);
                     }
                 }
-                // Assemble RHS
+                // assemble RHS
                 for a in 0..3 {
                     for b in 0..3 {
                         rhs_K[i][j][k][a][b] =
@@ -770,7 +981,7 @@ pub fn compute_K_rhs(
     rhs_K
 }
 
-/// Helper: sum K_{ac} K^c_b
+/// helper: sum K_{ac} K^c_b
 fn sum_Kac_Kcb(K: &[[f64; 3]; 3], K_up: &[[f64; 3]; 3], a: usize, b: usize) -> f64 {
     let mut sum = 0.0;
     for c in 0..3 {
@@ -779,7 +990,7 @@ fn sum_Kac_Kcb(K: &[[f64; 3]; 3], K_up: &[[f64; 3]; 3], a: usize, b: usize) -> f
     sum
 }
 
-/// Helper: second spatial derivative of scalar field at (i,j,k) wrt directions a, b (0=x,1=y,2=z)
+/// helper: second spatial derivative of scalar field at (i,j,k) wrt directions a, b (0=x,1=y,2=z)
 fn second_spatial_deriv(
     field: &Vec<Vec<Vec<f64>>>,
     i: usize, j: usize, k: usize,
@@ -787,7 +998,7 @@ fn second_spatial_deriv(
     dx: f64, dy: f64, dz: f64,
     nx: usize, ny: usize, nz: usize,
 ) -> f64 {
-    // For simplicity, only implement diagonal (a==b) second derivatives
+    // for simplicity, only implement diagonal (a==b) second derivatives
     if a != b { return 0.0; }
     let (di, dj, dk, h) = match a {
         0 => (1, 0, 0, dx),
@@ -806,10 +1017,10 @@ fn second_spatial_deriv(
     let f2 = field[im][jm][km];
     (f1 - 2.0*f0 + f2) / (h*h)
 }
-/// Compute the Ricci tensor of the 3-metric at each grid point using finite differences.
+/// compute the Ricci tensor of the 3-metric at each grid point using finite differences.
 ///
 /// `gamma` is the 3-metric field: [i][j][k][a][b] where (i,j,k) is the grid index and (a,b) are spatial indices (0..2).
-/// Returns a tensor field of the same shape: [i][j][k][a][b] for Ricci_{ab}.
+/// returns a tensor field of the same shape: [i][j][k][a][b] for Ricci_{ab}.
 pub fn compute_ricci_tensor(
     gamma: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     dx: f64, dy: f64, dz: f64,
@@ -819,17 +1030,17 @@ pub fn compute_ricci_tensor(
     let nz = gamma[0][0].len();
     let mut ricci = vec![vec![vec![[[0.0; 3]; 3]; nz]; ny]; nx];
 
-    // Helper: central difference, with simple boundary handling (one-sided at edges)
+    // helper: central difference, with simple boundary handling (one-sided at edges)
     let diff = |f1: f64, f2: f64, h: f64| (f1 - f2) / (2.0 * h);
 
-    // For each grid point, compute Ricci_{ab}
+    // for each grid point, compute Ricci_{ab}
     for i in 0..nx {
         for j in 0..ny {
             for k in 0..nz {
-                // Compute Christoffel symbols: Gamma^a_{bc}
+                // compute Christoffel symbols: Gamma^a_{bc}
                 let mut gamma_up = [[0.0; 3]; 3];
                 let mut inv_gamma = [[0.0; 3]; 3];
-                // Invert metric at (i,j,k)
+                // invert metric at (i,j,k)
                 let g = &gamma[i][j][k];
                 if let Some(inv) = invert_3x3(g) {
                     inv_gamma = inv;
@@ -838,7 +1049,7 @@ pub fn compute_ricci_tensor(
                     inv_gamma = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
                 }
 
-                // Christoffel symbols: Gamma^a_{bc} = 0.5 * g^{ad} (d_b g_{dc} + d_c g_{db} - d_d g_{bc})
+                // christoffel symbols: Gamma^a_{bc} = 0.5 * g^{ad} (d_b g_{dc} + d_c g_{db} - d_d g_{bc})
                 let mut christoffel = [[[0.0; 3]; 3]; 3]; // [a][b][c]
                 for a in 0..3 {
                     for b in 0..3 {
@@ -893,7 +1104,7 @@ pub fn compute_ricci_tensor(
     ricci
 }
 
-/// Helper: invert a 3x3 matrix. Returns None if singular.
+/// helper: invert a 3x3 matrix. Returns None if singular.
 pub fn invert_3x3(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let det = m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
             - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
@@ -912,7 +1123,7 @@ pub fn invert_3x3(m: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     Some(inv)
 }
 
-/// Helper: compute spatial derivative of gamma_{ab} with respect to direction dir (0=x,1=y,2=z)
+/// helper: compute spatial derivative of gamma_{ab} with respect to direction dir (0=x,1=y,2=z)
 fn spatial_deriv(
     gamma: &Vec<Vec<Vec<[[f64; 3]; 3]>>>,
     i: usize, j: usize, k: usize,
@@ -943,7 +1154,7 @@ fn spatial_deriv(
     (f1 - f2) / (2.0 * h)
 }
 
-/// Helper: compute spatial derivative of Christoffel symbol at (i,j,k) with respect to dir (0=x,1=y,2=z)
+/// helper: compute spatial derivative of Christoffel symbol at (i,j,k) with respect to dir (0=x,1=y,2=z)
 fn spatial_deriv_christoffel(
     christoffel: &[[[f64; 3]; 3]; 3],
     i: usize, j: usize, k: usize,
@@ -951,11 +1162,11 @@ fn spatial_deriv_christoffel(
     dx: f64, dy: f64, dz: f64,
     nx: usize, ny: usize, nz: usize,
 ) -> f64 {
-    // For now, use the same point (no grid for Christoffel, so just return 0)
-    // In a full implementation, Christoffel symbols would be stored on the grid and this would use finite differences
+    // for now, use the same point (no grid for Christoffel, so just return 0)
+    // in a full implementation, Christoffel symbols would be stored on the grid and this would use finite differences
     0.0
 }
-/// Utility: finite difference for first spatial derivative (central difference, periodic BC)
+/// utility: finite difference for first spatial derivative (central difference, periodic BC)
 fn fd1(field: &Vec<f64>, n: usize, stride: usize, i: usize, dx: f64) -> f64 {
     // stride: 1 for x, nx for y, nx*ny for z
     let ip = if i + stride < n { i + stride } else { i + stride - n };
@@ -963,7 +1174,7 @@ fn fd1(field: &Vec<f64>, n: usize, stride: usize, i: usize, dx: f64) -> f64 {
     (field[ip] - field[im]) / (2.0 * dx)
 }
 
-/// Utility: finite difference for second spatial derivative (central difference, periodic BC)
+/// utility: finite difference for second spatial derivative (central difference, periodic BC)
 fn fd2(field: &Vec<f64>, n: usize, stride: usize, i: usize, dx: f64) -> f64 {
     let ip = if i + stride < n { i + stride } else { i + stride - n };
     let im = if i >= stride { i - stride } else { n + i - stride };
@@ -974,7 +1185,7 @@ fn fd2(field: &Vec<f64>, n: usize, stride: usize, i: usize, dx: f64) -> f64 {
 // this module provides the data structures and stubs for evolving the spacetime metric numerically on a grid.
 // it is the foundation for a full numerical relativity solver (e.g., BSSN or ADM formalism).
 
-use crate::relativity::FourVector;
+
 
 /// 3+1D grid for metric field and auxiliary variables
 #[derive(Clone)]
@@ -1006,10 +1217,12 @@ pub type Metric3 = [[f64; 3]; 3];
 pub type ExtrinsicCurvature = [[f64; 3]; 3];
 
 
-/// Main struct for numerical relativity gravity (metric evolution)
-// Derive Clone for NumericalRelativityGravity so it can be cloned for model comparison
+/// main struct for numerical relativity gravity (metric evolution)
+// derive Clone for NumericalRelativityGravity so it can be cloned for model comparison
 #[derive(Clone)]
 pub struct NumericalRelativityGravity {
+    // --- matter fields ---
+    pub scalar_field: Option<ScalarField>,
     pub grid: Grid3D,
     pub metric: Vec<Metric3>, // 3-metric at each grid point
     pub extrinsic_curvature: Vec<ExtrinsicCurvature>,
@@ -1022,6 +1235,8 @@ pub struct NumericalRelativityGravity {
     pub trace_free_extrinsic: Vec<ExtrinsicCurvature>, // \bar{A}_{ij}
     pub trace_K: Vec<f64>, // K (trace of extrinsic curvature)
     pub conformal_connection: Vec<[f64; 3]>, // \bar{\Gamma}^i
+    /// damping parameter for Gamma-driver shift condition
+    pub eta: f64,
 }
 
 impl NumericalRelativityGravity {
@@ -1043,10 +1258,12 @@ impl NumericalRelativityGravity {
             trace_free_extrinsic: vec![zero_k; n],
             trace_K: vec![0.0; n],
             conformal_connection: vec![[0.0; 3]; n],
+            eta: 2.0, // default value for Gamma-driver damping
+            scalar_field: None,
         }
     }
 
-    /// Set initial data for a grid point
+    /// set initial data for a grid point
     pub fn set_initial_data(&mut self, i: usize, j: usize, k: usize, metric: Metric3, k_tensor: ExtrinsicCurvature, lapse: f64, shift: [f64; 3]) {
         let idx = self.grid.index(i, j, k);
         self.metric[idx] = metric;
@@ -1055,31 +1272,31 @@ impl NumericalRelativityGravity {
         self.shift[idx] = shift;
     }
 
-    /// Get the 3-metric at a given spatial index
+    /// get the 3-metric at a given spatial index
     pub fn metric_at(&self, i: usize, j: usize, k: usize) -> &Metric3 {
         &self.metric[self.grid.index(i, j, k)]
     }
 
-    /// Get the extrinsic curvature at a given spatial index
+    /// get the extrinsic curvature at a given spatial index
     pub fn extrinsic_curvature_at(&self, i: usize, j: usize, k: usize) -> &ExtrinsicCurvature {
         &self.extrinsic_curvature[self.grid.index(i, j, k)]
     }
 
-    /// Get the lapse at a given spatial index
+    /// get the lapse at a given spatial index
     pub fn lapse_at(&self, i: usize, j: usize, k: usize) -> f64 {
         self.lapse[self.grid.index(i, j, k)]
     }
 
-    /// Get the shift at a given spatial index
+    /// get the shift at a given spatial index
     pub fn shift_at(&self, i: usize, j: usize, k: usize) -> [f64; 3] {
         self.shift[self.grid.index(i, j, k)]
     }
 
-    /// Evolve the metric, extrinsic curvature, lapse, and shift by one time step (ADM update)
+    /// evolve the metric, extrinsic curvature, lapse, and shift by one time step (ADM update)
     pub fn evolve_step(&mut self, dt: f64) {
-        let eta = 1.0; // Damping parameter for shift evolution (can be made configurable)
+        let eta = 1.0; // damping parameter for shift evolution (can be made configurable)
         let gamma_driver_eta = 2.0; // Gamma-driver parameter
-        let lapse_damping = 0.2; // Constraint damping for lapse
+        let lapse_damping = 0.2; // constraint damping for lapse
         let nx = self.grid.nx;
         let ny = self.grid.ny;
         let nz = self.grid.nz;
@@ -1088,10 +1305,10 @@ impl NumericalRelativityGravity {
         let dy = self.grid.dy;
         let dz = self.grid.dz;
 
-        // Evolve the lapse using Bona-Masso slicing (1+log slicing) with constraint damping
+        // evolve the lapse using Bona-Masso slicing (1+log slicing) with constraint damping
         // ∂_t α = -2 α K + ζ Δα
         let mut new_lapse = self.lapse.clone();
-        // Prepare 3D array for Laplacian
+        // prepare 3D array for Laplacian
         let mut lapse_3d = vec![vec![vec![0.0; nz]; ny]; nx];
         for k in 0..nz {
             for j in 0..ny {
@@ -1124,9 +1341,9 @@ impl NumericalRelativityGravity {
         }
         self.lapse = new_lapse;
 
-        // --- Gamma-driver shift evolution ---
-        // Compute conformal connection functions (approximate, using metric derivatives)
-        // For now, use finite differences on the metric diagonal as a proxy for Γ^i
+        // --- gamma-driver shift evolution ---
+        // compute conformal connection functions (approximate, using metric derivatives)
+        // for now, use finite differences on the metric diagonal as a proxy for Γ^i
         let mut gamma_conn = vec![[0.0; 3]; n];
         for k in 1..(nz-1) {
             for j in 1..(ny-1) {
@@ -1135,7 +1352,7 @@ impl NumericalRelativityGravity {
                     // Γ^i ≈ sum_j ∂_j γ^{ij} (very rough, for demonstration)
                     for d in 0..3 {
                         let mut sum = 0.0;
-                        // Central difference for each direction
+                        // central difference for each direction
                         if d == 0 {
                             let ip = self.grid.index(i+1, j, k);
                             let im = self.grid.index(i-1, j, k);
@@ -1154,12 +1371,12 @@ impl NumericalRelativityGravity {
                 }
             }
         }
-        // Evolve B^i and shift β^i: ∂_t β^i = (3/4) B^i, ∂_t B^i = ∂_t Γ^i - η B^i
+        // evolve B^i and shift β^i: ∂_t β^i = (3/4) B^i, ∂_t B^i = ∂_t Γ^i - η B^i
         let mut new_shift = self.shift.clone();
         let mut new_shift_aux = self.shift_aux.clone();
         for idx in 0..n {
             for d in 0..3 {
-                // For demonstration, use gamma_conn as ∂_t Γ^i (should be time derivative, but use spatial for now)
+                // for demonstration, use gamma_conn as ∂_t Γ^i (should be time derivative, but use spatial for now)
                 let dgamma = gamma_conn[idx][d];
                 new_shift_aux[idx][d] += (dgamma - gamma_driver_eta * self.shift_aux[idx][d]) * dt;
                 new_shift[idx][d] += 0.75 * new_shift_aux[idx][d] * dt;
@@ -1168,7 +1385,7 @@ impl NumericalRelativityGravity {
         self.shift = new_shift;
         self.shift_aux = new_shift_aux;
 
-        // Gather 3-metric, extrinsic curvature, and lapse into 4D arrays for evolution
+        // gather 3-metric, extrinsic curvature, and lapse into 4D arrays for evolution
         let mut gamma = vec![vec![vec![[[0.0; 3]; 3]; nz]; ny]; nx];
         let mut K = vec![vec![vec![[[0.0; 3]; 3]; nz]; ny]; nx];
         let mut lapse = vec![vec![vec![0.0; nz]; ny]; nx];
@@ -1183,13 +1400,13 @@ impl NumericalRelativityGravity {
             }
         }
 
-        // Evolve metric and extrinsic curvature using ADM update
+        // evolve metric and extrinsic curvature using ADM update
         evolve_adm_euler(&mut gamma, &mut K, &lapse, dx, dy, dz, dt);
 
-        // Apply periodic boundary conditions (can be made runtime-configurable)
+        // apply periodic boundary conditions (can be made runtime-configurable)
         apply_periodic_boundary_conditions(&mut gamma, &mut K);
 
-        // Write updated values back to flat storage
+        // write updated values back to flat storage
         for k in 0..nz {
             for j in 0..ny {
                 for i in 0..nx {
@@ -1200,18 +1417,18 @@ impl NumericalRelativityGravity {
             }
         }
 
-        // --- Update BSSN variables from ADM fields ---
+        // --- update BSSN variables from ADM fields ---
         for k in 0..nz {
             for j in 0..ny {
                 for i in 0..nx {
                     let idx = self.grid.index(i, j, k);
                     let g = &self.metric[idx];
-                    // Compute conformal factor phi = (1/12) * ln(det(gamma_ij))
+                    // compute conformal factor phi = (1/12) * ln(det(gamma_ij))
                     let det = g[0][0]*g[1][1]*g[2][2] + 2.0*g[0][1]*g[0][2]*g[1][2]
                         - g[0][0]*g[1][2]*g[1][2] - g[1][1]*g[0][2]*g[0][2] - g[2][2]*g[0][1]*g[0][1];
                     let phi = (det.abs().ln() / 12.0).max(-20.0).min(20.0); // Clamp for safety
                     self.conformal_factor[idx] = phi;
-                    // Compute conformal metric \bar{\gamma}_{ij} = e^{-4phi} gamma_{ij}
+                    // compute conformal metric \bar{\gamma}_{ij} = e^{-4phi} gamma_{ij}
                     let exp_m4phi = (-4.0*phi).exp();
                     let mut conf_g = [[0.0; 3]; 3];
                     for a in 0..3 {
@@ -1220,11 +1437,11 @@ impl NumericalRelativityGravity {
                         }
                     }
                     self.conformal_metric[idx] = conf_g;
-                    // Compute trace K
+                    // compute trace K
                     let Kij = &self.extrinsic_curvature[idx];
                     let K_trace = Kij[0][0] + Kij[1][1] + Kij[2][2];
                     self.trace_K[idx] = K_trace;
-                    // Compute trace-free extrinsic curvature \bar{A}_{ij} = e^{-4phi}(K_{ij} - 1/3 gamma_{ij} K)
+                    // compute trace-free extrinsic curvature \bar{A}_{ij} = e^{-4phi}(K_{ij} - 1/3 gamma_{ij} K)
                     let mut Abar = [[0.0; 3]; 3];
                     for a in 0..3 {
                         for b in 0..3 {
@@ -1232,8 +1449,8 @@ impl NumericalRelativityGravity {
                         }
                     }
                     self.trace_free_extrinsic[idx] = Abar;
-                    // Compute conformal connection functions \bar{\Gamma}^i = -\partial_j \bar{\gamma}^{ij}
-                    // For now, use central differences on the diagonal (approximate)
+                    // compute conformal connection functions \bar{\Gamma}^i = -\partial_j \bar{\gamma}^{ij}
+                    // for now, use central differences on the diagonal (approximate)
                     let mut inv_conf_g = invert_3x3(&conf_g).unwrap_or([[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]);
                     let mut gamma_bar = [0.0; 3];
                     for d in 0..3 {
@@ -1258,7 +1475,7 @@ impl NumericalRelativityGravity {
             }
         }
 
-        // --- Constraint monitoring diagnostics ---
+        // --- constraint monitoring diagnostics ---
         let h_constraint = compute_hamiltonian_constraint(&gamma, &K, dx, dy, dz);
         let mut h_max: f64 = 0.0;
         let mut h_sum: f64 = 0.0;
@@ -1275,7 +1492,8 @@ impl NumericalRelativityGravity {
         }
         let h_avg = h_sum / h_count.max(1.0);
         println!("[ADM evolve] Hamiltonian constraint: max={:.3e}, avg={:.3e}", h_max, h_avg);
-        // TODO: Add momentum constraint diagnostics
-        // NOTE: This is a minimal ADM update. Real evolution requires constraint handling and boundary conditions.
+        // TODO: add momentum constraint diagnostics
+        // update gauge fields
+        // NOTE: this is a minimal ADM update. in the future i want to add constraint handling and boundary conditions.
     }
 }
