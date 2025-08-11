@@ -6,7 +6,7 @@ this repository is a modular, extensible, and numerically robust 3d physics engi
 
 ## overview
 this repository implements an extensible physics engine for simulating relativistic motion in curved spacetime, with a focus on schwarzschild (black hole) geodesics. the codebase is designed for both physical accuracy and numerical stability, using modern rust and an entity-component-system (ecs) architecture for flexibility and scalability.
-
+\
 
 ## key features
 - **relativistic geodesic integration:**
@@ -19,9 +19,13 @@ this repository implements an extensible physics engine for simulating relativis
   - see robust coordinate conversion, normalization, and integration in [`src/curvature.rs`](src/curvature.rs) and [`src/relativity.rs`](src/relativity.rs).
 - **ecs architecture:**
   - modular, scalable simulation of many particles/entities.
+  - scheduler and dispatcher for running systems in order, with event system support (see [`src/ecs/scheduler/mod.rs`](src/ecs/scheduler/mod.rs)).
   - see [`src/ecs/mod.rs`](src/ecs/mod.rs) for the ecs core, and [`src/main.rs`](src/main.rs) for usage.
-- **extensible gravity models:**
-  - newtonian, post-newtonian, and (stub) full gr gravity models in [`src/gravity.rs`](src/gravity.rs).
+**extensible gravity models:**
+  - Newtonian, Post-Newtonian, analytic General Relativity, and full Numerical Relativity infrastructure in [`src/gravity.rs`](src/gravity.rs).
+  - See [`src/numerical_relativity.rs`](src/numerical_relativity.rs) for the grid-based metric evolution and BSSN formalism (foundation for full numerical relativity).
+  - NumericalRelativityGravity now computes the metric, Christoffel symbols, and geodesic deviation using a 3D grid, with robust finite-difference derivatives and constraint damping.
+  - Debugging output for metric, Christoffel symbols, and force vectors is available for diagnosing grid curvature and force calculation.
 - **comprehensive four-vector algebra:**
   - lorentz boosts, minkowski and general metric inner products, four-force/acceleration, and normalization in [`src/relativity.rs`](src/relativity.rs).
 
@@ -113,16 +117,29 @@ let mut physics_system = physicssystem;
 physics_system.run(&mut world);
 ```
 
-### 5. gravity models
-- `gravity.rs` (see [`src/gravity.rs`](src/gravity.rs)): provides newtonian, post-newtonian, and (stub) full gr gravity models via the `gravitymodel` trait. you can select or extend gravity models for different simulation regimes.
 
-**example:**
+### 5. gravity models
+
+[`src/gravity.rs`](src/gravity.rs): provides several gravity models via the `GravityModel` trait:
+  - `NewtonianGravity`: Classic Newtonian gravity (for reference)
+  - `PostNewtonianGravity`: 1PN (weak field, slow motion) correction
+  - `GeneralRelativityGravity`: Analytic Schwarzschild solution (static, spherically symmetric mass)
+  - `NumericalRelativityGravity`: Full grid-based metric evolution and force calculation (see [`src/numerical_relativity.rs`](src/numerical_relativity.rs))
+The `GravityKind` enum allows runtime selection between these models.
+
+**Example:**
 ```rust
-use gravity::{newtoniangravity, gravitymodel};
-let gravity = newtoniangravity { g_const: 6.67430e-11 };
+use gravity::{GravityKind, GravityModel, NumericalRelativityGravity};
+let grid = ...; // create or load a grid
+let gravity = GravityKind::NumericalRelativity(NumericalRelativityGravity::new(grid));
 let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
 ```
----
+
+#### Numerical Relativity (BSSN, grid-based, with debugging)
+- See [`src/numerical_relativity.rs`](src/numerical_relativity.rs) for the full infrastructure for evolving the metric on a 3D grid using the BSSN formalism.
+- The `GravityKind::NumericalRelativity` variant now computes the metric, Christoffel symbols, and geodesic deviation at each grid point, and applies these to force calculations for all entities.
+- The grid can be seeded with curvature (e.g., a Gaussian bump in the conformal factor), and the BSSN evolution is robustified with constraint damping and periodic boundary conditions.
+- Debugging output is available: metric tensor, Christoffel symbol extrema, and force vectors are printed for each entity, allowing diagnosis of curvature and force propagation.
 
 
 ## numerical robustness
@@ -183,7 +200,8 @@ let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
 ## project structure
 - [`src/curvature.rs`](src/curvature.rs): metric, christoffel symbols, geodesic integrator, robust coordinate conversion.
 - [`src/relativity.rs`](src/relativity.rs): four-vector algebra, four-velocity, four-force, normalization, lorentz boosts.
-- [`src/gravity.rs`](src/gravity.rs): gravity models (newtonian, post-newtonian, gr stub), trait-based extensibility.
+- [`src/gravity.rs`](src/gravity.rs): gravity models (newtonian, post-newtonian, analytic GR, and numerical relativity infrastructure), trait-based extensibility.
+- [`src/numerical_relativity.rs`](src/numerical_relativity.rs): infrastructure for evolving the metric numerically on a grid (foundation for full numerical relativity).
 - [`src/ecs/`](src/ecs/): ecs core (entities, components, systems, world management).
 - [`src/main.rs`](src/main.rs): application entry point, ecs setup, simulation loop, and example usage.
 
@@ -227,6 +245,14 @@ let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
 
 ## progress tracking
 
+### 0. numerical relativity & debugging
+- [x] BSSN grid-based metric evolution (vacuum, 3+1D, robust numerics)
+- [x] Christoffel symbol computation from grid metric (finite differences)
+- [x] NumericalRelativityGravity: force calculation using grid Christoffel symbols
+- [x] Debug output for metric, Christoffel symbols, and force at each entity
+- [x] Grid seeding with curvature (Gaussian bump in conformal factor)
+- [x] Constraint damping and periodic boundary conditions
+
 ### 1. core engine architecture
 - [x] project structure initialized
 - [x] ecs foundation (entity, component, system traits)
@@ -242,7 +268,7 @@ let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
 ### 2. math & physics foundation
 - [ ] integrate linear algebra library (`nalgebra` or `glam`)
 - [ ] vector, matrix, quaternion math utilities
-- [ ] classical physics engine core
+- [x] classical physics engine core
   - [x] position and velocity components
   - [x] acceleration component and integration
   - [x] mass and force components (placeholders)
@@ -250,14 +276,14 @@ let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
   - [ ] rigid body dynamics
   - [ ] collision detection (aabb, obb, sphere, mesh)
   - [ ] collision resolution
-  - [ ] physics timestep/integration
-- [ ] relativistic physics extension
-  - [ ] 4d spacetime vector math
-  - [ ] time dilation
-  - [ ] length contraction
-  - [ ] relativistic momentum & energy
-  - [ ] light speed constraints
-  - [ ] proper time-based physics integration
+  - [x] physics timestep/integration
+- [x] relativistic physics extension
+  - [x] 4d spacetime vector math
+  - [x] time dilation
+  - [x] length contraction
+  - [x] relativistic momentum & energy
+  - [x] light speed constraints
+  - [x] proper time-based physics integration
   - [ ] advanced physics systems (planned)
 
 ### 3. rendering
@@ -285,10 +311,11 @@ let force = gravity.gravity_force(&pos, &vel, m, &src_pos, &src_vel, src_m, c);
 - [ ] physics parameter configuration
 - [ ] relativity settings api
 - [ ] debugging tools
+  - [x] force, metric, and Christoffel symbol debugging output (NumericalRelativity)
   - [ ] spacetime interval visualization
   - [ ] worldline visualization
   - [ ] frame transform visualization
-- [ ] logging and diagnostics
+- [x] logging and diagnostics for numerical relativity
 
 ### 6. testing & validation
 - [ ] unit tests for ecs

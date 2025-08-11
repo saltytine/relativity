@@ -1,8 +1,11 @@
 use crate::curvature::Metric;
+use crate::gravity::GravityModel;
 use ecs::System;
 mod curvature;
 mod ecs;
 mod relativity;
+mod gravity;
+mod numerical_relativity;
 
 // --- ECS foundation, entity management, and component storage demo ---
 
@@ -32,6 +35,58 @@ pub struct Force(pub f64, pub f64, pub f64);
 impl ecs::Component for Force {}
 
 fn main() {
+    // --- Gravity model selection ---
+    use crate::gravity::{GravityKind, NewtonianGravity, PostNewtonianGravity, GeneralRelativityGravity};
+    use crate::numerical_relativity::NumericalRelativityGravity;
+    // Change this to select the gravity model:
+    // let gravity_model = GravityKind::Newtonian(NewtonianGravity { g_const: 0.1 });
+    // let gravity_model = GravityKind::PostNewtonian(PostNewtonianGravity { g_const: 0.1 });
+    // let gravity_model = GravityKind::GeneralRelativity(GeneralRelativityGravity { g_const: 0.1 });
+    // Create grid and seed with a Gaussian bump in the conformal factor (curvature)
+    let mut grid = numerical_relativity::Grid3D::new(8,8,8,1.0,1.0,1.0);
+    let mut numrel = NumericalRelativityGravity::new(grid);
+    // Seed a Gaussian bump in the conformal factor at the center
+    let (nx, ny, nz) = (numrel.grid.nx, numrel.grid.ny, numrel.grid.nz);
+    let (cx, cy, cz) = ((nx/2) as f64, (ny/2) as f64, (nz/2) as f64);
+    let sigma2 = 2.0;
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                let x = i as f64;
+                let y = j as f64;
+                let z = k as f64;
+                let r2 = (x-cx).powi(2) + (y-cy).powi(2) + (z-cz).powi(2);
+                // Gaussian bump in conformal factor phi
+                let phi = 0.2 * (-r2/(2.0*sigma2)).exp();
+                let idx = numrel.grid.index(i, j, k);
+                numrel.conformal_factor[idx] = phi;
+                // Update conformal metric accordingly
+                let exp_m4phi = (-4.0*phi).exp();
+                let flat3 = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]];
+                let mut conf_g = [[0.0; 3]; 3];
+                for a in 0..3 {
+                    for b in 0..3 {
+                        conf_g[a][b] = flat3[a][b] * exp_m4phi;
+                    }
+                }
+                numrel.conformal_metric[idx] = conf_g;
+                // Update physical metric as well
+                let exp4phi = (4.0*phi).exp();
+                let mut g = [[0.0; 3]; 3];
+                for a in 0..3 {
+                    for b in 0..3 {
+                        g[a][b] = conf_g[a][b] * exp4phi;
+                    }
+                }
+                numrel.metric[idx] = g;
+            }
+        }
+    }
+    // Optionally, evolve the grid for a few steps to let the metric respond
+    for _ in 0..2 {
+        numrel.evolve_bssn_step(0.1);
+    }
+    let gravity_model = GravityKind::NumericalRelativity(numrel.clone());
     println!("[cargo run] Physics engine starting up...");
     let mut world = ecs::World::new();
 
@@ -376,10 +431,12 @@ mod relativity_tests {
     println!("[progress] Position integrated by four-velocity for all entities (relativistic coordinate time)");
 
 
-    // register and run PhysicsSystem (now with acceleration integration)
-    println!("[progress] Checking off: System registration and execution, Acceleration integration");
-    let mut physics_system = ecs::PhysicsSystem;
-    physics_system.run(&mut world);
+    // --- ECS Scheduler integration ---
+    use ecs::scheduler::Scheduler;
+    let mut scheduler = Scheduler::new();
+    scheduler.add_system(ecs::PhysicsSystem);
+    println!("[progress] Checking off: System registration and execution, Acceleration integration (via Scheduler)");
+    scheduler.run(&mut world);
 
     // print each entity's new state after physics
     for &entity in &entities {
@@ -392,4 +449,39 @@ mod relativity_tests {
     }
 
     // TODO: Add more physics systems and expand ECS features
+
+    // --- Gravity model comparison demo ---
+    let newtonian = GravityKind::Newtonian(NewtonianGravity { g_const: 0.1 });
+    let postnewtonian = GravityKind::PostNewtonian(PostNewtonianGravity { g_const: 0.1 });
+    let gr = GravityKind::GeneralRelativity(GeneralRelativityGravity { g_const: 0.1 });
+    // Use the same seeded grid for the comparison demo
+    let numrel = GravityKind::NumericalRelativity(numrel.clone());
+    let gravity_models = [
+        ("Newtonian", &newtonian),
+        ("PostNewtonian", &postnewtonian),
+        ("GeneralRelativity", &gr),
+        ("NumericalRelativity", &numrel),
+    ];
+    println!("\n[gravity comparison] For each entity pair, showing force from each ruleset:");
+    for i in 0..all_entities.len() {
+        for j in (i+1)..all_entities.len() {
+            let e1 = all_entities[i];
+            let e2 = all_entities[j];
+            let (pos1, pos2, mass1, mass2, vel1, vel2) = (
+                world.get_component::<Position>(e1),
+                world.get_component::<Position>(e2),
+                world.get_component::<Mass>(e1),
+                world.get_component::<Mass>(e2),
+                world.get_component::<Velocity>(e1),
+                world.get_component::<Velocity>(e2),
+            );
+            if let (Some(pos1), Some(pos2), Some(m1), Some(m2), Some(vel1), Some(vel2)) = (pos1, pos2, mass1, mass2, vel1, vel2) {
+                for (label, model) in &gravity_models {
+                    let f = model.gravity_force(&pos1.0, &vel1.0, m1.0, &pos2.0, &vel2.0, m2.0, c);
+                    println!("[{}] Entity {:?} -> {:?}: FourForce = {{ t: {:.3e}, x: {:.3e}, y: {:.3e}, z: {:.3e} }}", label, e1, e2, f.t, f.x, f.y, f.z);
+                }
+            }
+        }
+    }
+    println!("[gravity comparison] Done.\n");
 }

@@ -20,6 +20,9 @@ impl System for PhysicsSystem {
             let c = 10.0; // use same c as main.rs for demo
             let d_t = 1.0; // use same d_t as main.rs for demo
             for (entity, acc) in acc_vec {
+                // Debug: print current velocity and acceleration
+                println!("[debug] Entity {:?} pre-integration velocity: {:?}", entity, vel_map.get(&entity));
+                println!("[debug] Entity {:?} acceleration: {:?}", entity, acc);
                 if let Some(vel) = vel_map.get_mut(&entity) {
                     let gamma = vel.0.gamma(c).max(1e-6);
                     let d_tau = d_t / gamma;
@@ -41,6 +44,9 @@ impl System for PhysicsSystem {
         if let Some(pos_map) = world.components.get_mut(&type_id_pos)
             .and_then(|c| c.downcast_mut::<std::collections::HashMap<Entity, crate::Position>>()) {
             for (entity, vel) in vel_vec {
+                // Debug: print current position and velocity before integration
+                println!("[debug] Entity {:?} pre-integration position: {:?}", entity, pos_map.get(&entity));
+                println!("[debug] Entity {:?} velocity: {:?}", entity, vel);
                 if let Some(pos) = pos_map.get_mut(&entity) {
                     // for all four-vector math, use metric where appropriate.
                     pos.0.t += vel.0.0.t * 1.0;
@@ -54,7 +60,9 @@ impl System for PhysicsSystem {
         println!("[progress] Four-velocity integrated into position");
     }
 }
-/// ECS core traits and types for the engine
+
+/// ecs scheduler and event system are in scheduler/mod.rs
+pub mod scheduler;
 
 use std::collections::{HashMap, HashSet};
 use std::any::{Any, TypeId};
