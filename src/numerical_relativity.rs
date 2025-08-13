@@ -172,32 +172,48 @@ pub fn apply_bc_scalar_3d(
 impl NumericalRelativityGravity {
     /// evolve the BSSN variables by one time step (full BSSN evolution, 3+1D, no matter)
     pub fn evolve_bssn_step(&mut self, dt: f64) {
-        // --- constraint diagnostics and (placeholder) damping ---
-        // compute Hamiltonian constraint (already present in your code)
-        // let h_constraint = compute_hamiltonian_constraint(...);
-        // let m_constraint = compute_momentum_constraint(...); 
-        // TODO: implement
-        // constraint_diagnostics(&self.grid, &h_constraint, None);
-        // TODO: Add constraint damping to evolution equations (e.g., subtract epsilon * constraint)
-    let nx = self.grid.nx;
-    let ny = self.grid.ny;
-    let nz = self.grid.nz;
-    let n = nx * ny * nz;
-    let dx = self.grid.dx;
-    let dy = self.grid.dy;
-    let dz = self.grid.dz;
-    // storage for updated BSSN variables and gauge fields
-    let mut new_conf_metric = self.conformal_metric.clone();
-    let mut new_phi = self.conformal_factor.clone();
-    let mut new_Abar = self.trace_free_extrinsic.clone();
-    let mut new_K = self.trace_K.clone();
-    let mut new_Gamma = self.conformal_connection.clone();
-    let mut new_lapse = self.lapse.clone();
-    let mut new_shift = self.shift.clone();
-    let mut new_shift_aux = self.shift_aux.clone();
-    // precompute conformal Ricci tensor (vacuum, no matter)
-    // for demonstration, use the ADM Ricci as a proxy for conformal Ricci
-    let gamma_grid = self.metric_to_grid();
+        // storage for updated BSSN variables and gauge fields
+        let mut new_conf_metric = self.conformal_metric.clone();
+        let mut new_phi = self.conformal_factor.clone();
+        let mut new_Abar = self.trace_free_extrinsic.clone();
+        let mut new_K = self.trace_K.clone();
+        let mut new_Gamma = self.conformal_connection.clone();
+        let mut new_lapse = self.lapse.clone();
+        let mut new_shift = self.shift.clone();
+        let mut new_shift_aux = self.shift_aux.clone();
+        // precompute conformal Ricci tensor (vacuum, no matter)
+        // for demonstration, use the ADM Ricci as a proxy for conformal Ricci
+        let gamma_grid = self.metric_to_grid();
+
+        let nx = self.grid.nx;
+        let ny = self.grid.ny;
+        let nz = self.grid.nz;
+        let n = nx * ny * nz;
+        let dx = self.grid.dx;
+        let dy = self.grid.dy;
+        let dz = self.grid.dz;
+
+        // --- constraint diagnostics and damping ---
+        let gamma = self.metric_to_grid();
+        let K = self.extrinsic_to_grid();
+        let h_constraint = compute_hamiltonian_constraint(&gamma, &K, dx, dy, dz);
+        let m_constraint = compute_momentum_constraint(&gamma, &K, dx, dy, dz);
+        constraint_diagnostics(&self.grid, &h_constraint, Some(&m_constraint));
+
+        // Simple constraint damping (example, can be tuned)
+        let constraint_damping = 0.1 * dt;
+        for idx in 0..n {
+            // get grid indices
+            let i = idx % nx;
+            let j = (idx / nx) % ny;
+            let k = idx / (nx * ny);
+            // Hamiltonian constraint: damp K
+            new_K[idx] -= constraint_damping * h_constraint[i][j][k];
+            // Momentum constraint: damp diagonal of Abar
+            for a in 0..3 {
+                new_Abar[idx][a][a] -= constraint_damping * m_constraint[i][j][k][a];
+            }
+        }
     let ricci_grid = compute_ricci_tensor(&gamma_grid, dx, dy, dz);
     // evolve each grid point (interior only)
     for k in 1..(nz-1) {
@@ -1492,7 +1508,22 @@ impl NumericalRelativityGravity {
         }
         let h_avg = h_sum / h_count.max(1.0);
         println!("[ADM evolve] Hamiltonian constraint: max={:.3e}, avg={:.3e}", h_max, h_avg);
-        // TODO: add momentum constraint diagnostics
+        // Momentum constraint diagnostics
+        let m_constraint = compute_momentum_constraint(&gamma, &K, dx, dy, dz);
+        let mut m_max: f64 = 0.0;
+        let mut m_sum: f64 = 0.0;
+        for i in 0..nx {
+            for j in 0..ny {
+                for k in 0..nz {
+                    let v = m_constraint[i][j][k];
+                    let norm = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+                    m_max = m_max.max(norm);
+                    m_sum += norm;
+                }
+            }
+        }
+        let m_avg = m_sum / h_count.max(1.0);
+        println!("[ADM evolve] Momentum constraint: max={:.3e}, avg={:.3e}", m_max, m_avg);
         // update gauge fields
         // NOTE: this is a minimal ADM update. in the future i want to add constraint handling and boundary conditions.
     }
